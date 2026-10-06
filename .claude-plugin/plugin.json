@@ -1,6 +1,6 @@
 {
   "name": "status-band",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Status de contexto e limites 5h/7d para Claude Code: linha com emojis no terminal e barras modernas no desktop",
   "author": { "name": "frshaka" },
   "types": "./types/index.d.ts"

@@ -9,6 +9,10 @@ const statusData = atom({ plugin: 'status-band', key: 'data' } as const, null)
 const AUTO_COMPACT_BUFFER_PCT = 16.5
 const RATE_LIMIT_CACHE_TTL_MS = 30 * 60 * 1000
 const ELAPSED_TICK_MS = 1000
+// Do maior para o menor: o alerta cita o patamar mais alto já cruzado
+const RATE_LIMIT_ALERT_THRESHOLDS = [95, 80]
+const CONTEXT_ALERT_PCT = 85
+const RATE_LIMIT_ALERT_KEY = 'alert:five_hour'
 const BAR_WIDTH = 10
 const FILLED_SEGMENT = '▰'
 const EMPTY_SEGMENT = '▱'
@@ -154,6 +158,47 @@ async function refresh($: EngineInterface, context: SessionContextUsage, rateLim
   }))
 }
 
+type RateLimitAlert = { resetsAt: string; threshold: number }
+
+export function crossedThreshold(percent: number): number | null {
+  return RATE_LIMIT_ALERT_THRESHOLDS.find(threshold => percent >= threshold) ?? null
+}
+
+function formatResetTime(resetsAt: string | undefined): string {
+  if (!resetsAt) return ''
+  const reset = new Date(resetsAt)
+  if (Number.isNaN(reset.getTime())) return ''
+  const hours = String(reset.getHours()).padStart(2, '0')
+  const minutes = String(reset.getMinutes()).padStart(2, '0')
+  return `, zera às ${hours}:${minutes}`
+}
+
+// Um aviso por patamar dentro de cada janela de 5h; a janela é identificada pelo horário em que zera
+async function alertRateLimit($: EngineInterface, rateLimits: readonly SessionRateLimit[]): Promise<void> {
+  const window = rateLimits.find(limit => limit.kind === 'five_hour')
+  const threshold = window ? crossedThreshold(window.percentUsed) : null
+  if (!window || threshold === null) return
+  const resetsAt = window.resetsAt ?? ''
+  const last = (await $.store.get(RATE_LIMIT_ALERT_KEY)) as RateLimitAlert | undefined
+  if (last && last.resetsAt === resetsAt && last.threshold >= threshold) return
+  await $.store.set(RATE_LIMIT_ALERT_KEY, { resetsAt, threshold })
+  $.ui.toast(`Limite de 5h em ${Math.round(window.percentUsed)}%${formatResetTime(window.resetsAt)}`)
+}
+
+// Avisa uma vez ao cruzar o patamar e rearma quando o contexto volta a cair (depois de um /compact)
+let isContextAlertArmed = true
+function alertContext($: EngineInterface, context: SessionContextUsage): void {
+  const percent = usableContextPercent(context)
+  if (percent === null) return
+  if (percent < CONTEXT_ALERT_PCT) {
+    isContextAlertArmed = true
+    return
+  }
+  if (!isContextAlertArmed) return
+  isContextAlertArmed = false
+  $.ui.toast(`Contexto em ${percent}%: rode /compact antes que o auto-compact corte a tarefa no meio`)
+}
+
 export function emojiBar(percent: number | null): string {
   const filled = percent === null ? 0 : Math.round((percent / 100) * BAR_WIDTH)
   return FILLED_SEGMENT.repeat(filled) + EMPTY_SEGMENT.repeat(BAR_WIDTH - filled)
@@ -250,6 +295,8 @@ export const register: Register = on => {
   // Disparado ao fim de cada turno e quando um limite muda: cobre modelo, git e consumo sem polling
   on('session.measure', async ($, e, next) => {
     await refresh($, e.context, e.rateLimits)
+    alertContext($, e.context)
+    await alertRateLimit($, e.rateLimits)
     return next(e)
   })
 

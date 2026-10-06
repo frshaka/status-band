@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { barSvg, emojiBar, formatElapsed, formatModelName, formatTokenCount, parseGitStatus, usableContextPercent } from './register'
+import { barSvg, crossedThreshold, emojiBar, formatElapsed, formatModelName, formatTokenCount, parseGitStatus, usableContextPercent } from './register'
 
 const SURFACES = ['terminal', 'desktop'] as const
 
@@ -44,6 +44,42 @@ test('barra de segmentos e cronômetro do terminal', () => {
   expect(formatElapsed(42_000)).toBe('42s')
   expect(formatElapsed(527_000)).toBe('8m 47s')
   expect(formatElapsed(3_900_000)).toBe('1h 5m')
+})
+
+test('patamares de alerta do limite de 5h', () => {
+  expect(crossedThreshold(79.9)).toBe(null)
+  expect(crossedThreshold(80)).toBe(80)
+  expect(crossedThreshold(96)).toBe(95)
+})
+
+test('avisa uma vez por patamar e quando o contexto enche', async ($, on) => {
+  const toasts: string[] = []
+  const store = new Map<string, unknown>()
+  on('session.cwd', () => ({ value: 'C:/proj/app' }))
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200_000 }, rateLimits: [] } }))
+  on('env.get', () => ({ value: undefined }))
+  on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('clock.now', () => ({ value: 0 }))
+  on('store.get', (_engine, e) => ({ value: store.get(e.key) }))
+  on('store.set', (_engine, e) => (store.set(e.key, e.value), { value: undefined }))
+  on('ui.toast', (_engine, e) => (toasts.push(e.text), { value: undefined }))
+  on('session.measure', (_engine, e) => ({ changed: e.changed }))
+
+  const measure = (contextPercent: number, used5h: number) =>
+    $.session.measure({
+      context: { tokens: 1, window: 200_000, percent: contextPercent },
+      rateLimits: [{ kind: 'five_hour', percentUsed: used5h, resetsAt: '2026-10-06T18:30:00Z' }],
+      changed: ['context', 'rateLimits'],
+    })
+
+  await measure(10, 81)
+  await measure(10, 85)
+  await measure(80, 96)
+  await measure(81, 97)
+
+  expect(toasts.filter(text => text.startsWith('Limite de 5h'))).toHaveLength(2)
+  expect(toasts.filter(text => text.startsWith('Contexto em'))).toHaveLength(1)
 })
 
 for (const surface of SURFACES) {
