@@ -4,6 +4,7 @@ Mod do Claude Code que mostra modelo, pasta, git, tempo de sessão, uso de conte
 
 - **Terminal:** duas linhas com emojis e barras `▰▱`.
 - **Desktop (aba Code):** uma linha com barras arredondadas para contexto, 5h e 7 dias.
+- **Alertas:** aviso quando o limite de 5h passa de 80% e de 95% (com o horário em que zera) e quando o contexto passa de 85%, sugerindo `/compact`.
 
 ## Instalação
 
