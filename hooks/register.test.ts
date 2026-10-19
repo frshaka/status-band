@@ -92,6 +92,8 @@ for (const surface of SURFACES) {
       value: { exitCode: 0, stdout: '## main\n M x\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
     }))
     on('clock.now', () => ({ value: 527_000 }))
+    // Base da cadeia do AbovePrompt: a faixa agora sempre chama next(e)
+    on('ui.render', () => ({ type: 'Text', props: {}, children: ['engine band'] }))
     on('store.set', () => ({ value: undefined }))
     on('store.get', () => ({ value: undefined }))
     on('session.measure', (_engine, e) => ({ changed: e.changed }))
@@ -109,6 +111,7 @@ for (const surface of SURFACES) {
       props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120, scroll: { offset: 0, bodyRows: 10 } } as never,
     })
     const texts = (await ui.findAll({ type: 'Text' })).map(found => found.text).join('')
+    expect(texts).toContain('engine band')
 
     if (surface === 'terminal') {
       expect(texts).toContain('🤖 Opus 5.5 (1M) | 📂 meu-app | 🌳 main ●')

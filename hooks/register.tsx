@@ -312,10 +312,14 @@ export const register: Register = on => {
     const data = await read($, statusData)
     if (e.props.hasSurvey || data === null) return next(e)
 
+    // Compõe com a cadeia para não esconder outros mods do AbovePrompt (ex.: image-view)
+    const below = await next(e)
     if (e.surface === 'terminal') {
       const elapsed = formatElapsed((await $.clock.now()) - data.startedAt)
-      return renderTerminal($.ui.resolve(e), data, elapsed)
+      const table = $.ui.resolve(e)
+      return <table.Box flexDirection="column">{renderTerminal(table, data, elapsed)}{below}</table.Box>
     }
-    return renderModern($.ui.resolve(e), data)
+    const table = $.ui.resolve(e)
+    return <table.Box flexDirection="column">{renderModern(table, data)}{below}</table.Box>
   })
 }
