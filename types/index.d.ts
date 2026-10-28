@@ -9,6 +9,8 @@ export type StatusData = {
   contextTokens: string
   rateLimit5h: number | null
   rateLimit7d: number | null
+  lastResponseAt: number | null
+  lastCacheHit: boolean | null
 }
 
 declare module 'claude-code' {

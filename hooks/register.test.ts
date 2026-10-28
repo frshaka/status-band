@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { barSvg, crossedThreshold, emojiBar, formatElapsed, formatModelName, formatTokenCount, parseGitStatus, usableContextPercent } from './register'
+import { barSvg, cacheTtlMs, crossedThreshold, emojiBar, formatCache, formatElapsed, formatModelName, formatTokenCount, parseGitStatus, usableContextPercent } from './register'
 
 const SURFACES = ['terminal', 'desktop'] as const
 
@@ -44,6 +44,18 @@ test('barra de segmentos e cronômetro do terminal', () => {
   expect(formatElapsed(42_000)).toBe('42s')
   expect(formatElapsed(527_000)).toBe('8m 47s')
   expect(formatElapsed(3_900_000)).toBe('1h 5m')
+})
+
+test('duração do cache pelo plano ou forçada', () => {
+  expect(cacheTtlMs('auto', true)).toBe(3_600_000)
+  expect(cacheTtlMs('auto', false)).toBe(300_000)
+  expect(cacheTtlMs('5m', true)).toBe(300_000)
+  expect(cacheTtlMs('1h', false)).toBe(3_600_000)
+})
+
+test('contagem regressiva do cache', () => {
+  expect(formatCache(0, true, 300_000, 48_000)).toBe('🧊 Cache 4m 12s ✓')
+  expect(formatCache(0, false, 300_000, 300_000)).toBe('❄️ Cache frio ✗')
 })
 
 test('patamares de alerta do limite de 5h', () => {
@@ -126,3 +138,65 @@ for (const surface of SURFACES) {
     }
   })
 }
+
+const BAND_PROPS = { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120, scroll: { offset: 0, bodyRows: 10 } } as never
+
+const HIDDEN_USAGE = { show_context: false, show_rate_limit_5h: false, show_rate_limit_7d: false, show_effort: false, show_folder: false }
+
+test('esconde itens desligados no config e a linha que fica vazia', { options: HIDDEN_USAGE }, async ($, on) => {
+  on('session.cwd', () => ({ value: 'C:/proj/meu-app' }))
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200_000 }, rateLimits: [] } }))
+  on('env.get', () => ({ value: undefined }))
+  on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('clock.now', () => ({ value: 60_000 }))
+  on('ui.render', () => ({ type: 'Text', props: {}, children: [''] }))
+  on('store.set', () => ({ value: undefined }))
+  on('store.get', () => ({ value: undefined }))
+  on('session.measure', (_engine, e) => ({ changed: e.changed }))
+
+  await $.session.measure({ context: { tokens: 1, window: 200_000, percent: 1 }, rateLimits: [], changed: ['context'] })
+  const ui = await $.ui.mount({ plugin: 'status-band', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
+  const texts = (await ui.findAll({ type: 'Text' })).map(found => found.text).join('')
+
+  expect(texts).toContain('🤖 Opus 5.5 | ⌛ 1m 0s')
+  expect(texts).not.toContain('📂')
+  expect(texts).not.toContain('Context')
+  expect(texts).not.toContain('Weekly')
+  expect(texts).not.toContain('Cache')
+})
+
+test('cache conta a partir da resposta da thread principal e ignora subagentes', async ($, on) => {
+  let now = 0
+  on('session.cwd', () => ({ value: 'C:/proj/meu-app' }))
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200_000 }, rateLimits: [] } }))
+  on('env.get', () => ({ value: undefined }))
+  on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('clock.now', () => ({ value: now }))
+  on('ui.render', () => ({ type: 'Text', props: {}, children: [''] }))
+  on('store.set', () => ({ value: undefined }))
+  on('store.get', () => ({ value: undefined }))
+  on('session.measure', (_engine, e) => ({ changed: e.changed }))
+  on('turn.step', async function* (_engine, e) {
+    const usage = { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: e.agentId ? 0 : 900, cache_creation_input_tokens: 0, model: 'claude-opus-5-5' }
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage } as never
+  })
+
+  const step = async (agentId?: string) => {
+    const stream = $.turn.step({ turnId: 't', index: 0, model: 'claude-opus-5-5', messageCount: 1, agentId } as never)
+    for await (const _chunk of stream);
+  }
+  const bandText = async () => {
+    const ui = await $.ui.mount({ plugin: 'status-band', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
+    return (await ui.findAll({ type: 'Text' })).map(found => found.text).join('')
+  }
+
+  await $.session.measure({ context: { tokens: 1, window: 200_000, percent: 1 }, rateLimits: [], changed: ['context'] })
+  await step()
+  now = 60_000
+  await step('sub-1')
+  expect(await bandText()).toContain('🧊 Cache 4m 0s ✓')
+  now = 300_000
+  expect(await bandText()).toContain('❄️ Cache frio ✓')
+})

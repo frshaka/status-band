@@ -1,7 +1,21 @@
 {
   "name": "status-band",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "Status de contexto e limites 5h/7d para Claude Code: linha com emojis no terminal e barras modernas no desktop",
   "author": { "name": "frshaka" },
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "show_model": { "type": "boolean", "title": "Terminal: modelo", "description": "Mostra o modelo da sessão", "default": true },
+    "show_effort": { "type": "boolean", "title": "Terminal: effort", "description": "Mostra o effort da última requisição", "default": true },
+    "show_folder": { "type": "boolean", "title": "Terminal: pasta", "description": "Mostra a pasta atual", "default": true },
+    "show_git": { "type": "boolean", "title": "Terminal: git", "description": "Mostra a branch e se há alterações", "default": true },
+    "show_elapsed": { "type": "boolean", "title": "Terminal: tempo de sessão", "description": "Mostra o cronômetro da sessão", "default": true },
+    "show_cache": { "type": "boolean", "title": "Terminal: cache", "description": "Mostra quanto falta para o cache do prompt esfriar", "default": true },
+    "show_context": { "type": "boolean", "title": "Terminal: contexto", "description": "Mostra o uso de contexto", "default": true },
+    "show_rate_limit_5h": { "type": "boolean", "title": "Terminal: limite de 5h", "description": "Mostra a barra do limite de 5h", "default": true },
+    "show_rate_limit_7d": { "type": "boolean", "title": "Terminal: limite semanal", "description": "Mostra a barra do limite de 7 dias", "default": true },
+    "alert_rate_limit": { "type": "boolean", "title": "Alerta do limite de 5h", "description": "Avisa quando o limite de 5h passa de 80% e de 95%", "default": true },
+    "alert_context": { "type": "boolean", "title": "Alerta de contexto", "description": "Avisa quando o contexto passa de 85%", "default": true },
+    "cache_ttl": { "type": "string", "title": "Duração do cache", "description": "auto: 1h com assinatura (limites de 5h/7d presentes), 5m sem", "options": ["auto", "5m", "1h"], "default": "auto" }
+  }
 }

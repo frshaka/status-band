@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { ElementTable, EngineInterface, Register, SessionContextUsage, SessionRateLimit } from 'claude-code'
+import type { ElementTable, EngineInterface, ModelUsage, PluginOptions, Register, SessionContextUsage, SessionRateLimit } from 'claude-code'
 
 import type { StatusData } from '../types'
 
@@ -13,6 +13,7 @@ const ELAPSED_TICK_MS = 1000
 const RATE_LIMIT_ALERT_THRESHOLDS = [95, 80]
 const CONTEXT_ALERT_PCT = 85
 const RATE_LIMIT_ALERT_KEY = 'alert:five_hour'
+const CACHE_TTL_MS = { '5m': 5 * 60 * 1000, '1h': 60 * 60 * 1000 } as const
 const BAR_WIDTH = 10
 const FILLED_SEGMENT = '▰'
 const EMPTY_SEGMENT = '▱'
@@ -35,6 +36,8 @@ const TERMINAL_COLORS = {
   context: '#ffaf00',
   session: '#2fdf42',
   bar: '#34e2e2',
+  cacheWarm: '#89dceb',
+  cacheCold: '#6c7086',
 } as const
 
 type RateLimitCache = { rateLimit5h: number | null; rateLimit7d: number | null; updatedAt: number }
@@ -155,7 +158,34 @@ async function refresh($: EngineInterface, context: SessionContextUsage, rateLim
     contextPercent: usableContextPercent(context),
     contextTokens: contextTokens(context),
     ...limits,
+    // `?? null` também normaliza o estado gravado por versões sem esses campos
+    lastResponseAt: previous?.lastResponseAt ?? null,
+    lastCacheHit: previous?.lastCacheHit ?? null,
   }))
+}
+
+// shortcut: o plano é inferido pelos limites de 5h/7d, que só vêm em assinatura; se errar, forçar `cache_ttl` no /config
+export function cacheTtlMs(setting: string, hasSubscription: boolean): number {
+  if (setting === '5m' || setting === '1h') return CACHE_TTL_MS[setting]
+  return hasSubscription ? CACHE_TTL_MS['1h'] : CACHE_TTL_MS['5m']
+}
+
+// O ✓/✗ é o que a última requisição de fato leu do cache, não a estimativa
+export function formatCache(lastResponseAt: number, lastCacheHit: boolean, ttlMs: number, now: number): string {
+  const remaining = lastResponseAt + ttlMs - now
+  const mark = lastCacheHit ? '✓' : '✗'
+  return remaining > 0 ? `🧊 Cache ${formatElapsed(remaining)} ${mark}` : `❄️ Cache frio ${mark}`
+}
+
+async function recordCacheUse($: EngineInterface, usage: ModelUsage): Promise<void> {
+  const now = await $.clock.now()
+  await update($, statusData, previous =>
+    previous ? { ...previous, lastResponseAt: now, lastCacheHit: usage.cache_read_input_tokens > 0 } : previous,
+  )
+}
+
+function isEnabled(options: PluginOptions, key: string): boolean {
+  return options[key] !== false
 }
 
 type RateLimitAlert = { resetsAt: string; threshold: number }
@@ -223,37 +253,58 @@ export function barSvg(percent: number | null): string {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${BAR_PX_WIDTH}" height="${BAR_PX_HEIGHT}" viewBox="0 0 ${BAR_PX_WIDTH} ${BAR_PX_HEIGHT}">${track}${fill}</svg>`
 }
 
-function renderTerminal(table: ElementTable<'terminal'>, data: StatusData, elapsed: string) {
+function renderTerminal(table: ElementTable<'terminal'>, data: StatusData, options: PluginOptions, now: number) {
   const { Box, Text } = table
   const c = TERMINAL_COLORS
-  const separator = (key: string) => <Text key={key}> | </Text>
+  const show = (key: string) => isEnabled(options, key)
+  // Cada trecho é um Box para quebrar de linha inteiro; os desligados ou sem dado ficam null
+  const line = (key: string, segments: readonly (JSX.Element | null)[]) => {
+    const present = segments.filter(segment => segment !== null)
+    if (present.length === 0) return null
+    const joined = present.flatMap((segment, index) => (index === 0 ? [segment] : [<Text key={`s-${index}`}> | </Text>, segment]))
+    return <Box key={key} flexWrap="wrap">{joined}</Box>
+  }
+  const cache = show('show_cache') && data.lastResponseAt !== null && data.lastCacheHit !== null
+    ? formatCache(data.lastResponseAt, data.lastCacheHit, cacheTtlMs(String(options.cache_ttl), data.rateLimit5h !== null || data.rateLimit7d !== null), now)
+    : null
 
   return (
     <Box flexDirection="column">
-      <Box flexWrap="wrap">
-        <Text bold color={c.model}>🤖 {data.model}</Text>
-        {data.effort ? separator('s-effort') : null}
-        {data.effort ? <Text bold color={c.label}>Effort {data.effort}</Text> : null}
-        {separator('s-folder')}
-        <Text bold color={c.folder}>📂 {data.folder}</Text>
-        {data.gitBranch ? separator('s-git') : null}
-        {data.gitBranch ? <Text italic color={c.branch}>🌳 {data.gitBranch} </Text> : null}
-        {data.gitBranch ? <Text color={data.isGitDirty ? c.dirty : c.clean}>{data.isGitDirty ? '●' : '✓'}</Text> : null}
-        {separator('s-elapsed')}
-        <Text color={c.elapsed}>⌛ {elapsed}</Text>
-      </Box>
-      <Box flexWrap="wrap">
-        <Text bold color={c.label}>🚀 Context </Text>
-        <Text bold color={c.context}>
-          {data.contextTokens ? `${data.contextTokens.replace(/ /g, '')} ` : ''}{percentLabel(data.contextPercent)}
-        </Text>
-        {separator('s-5h')}
-        <Text color={c.session}>🔥 Session 5h </Text>
-        <Text color={c.bar}>{emojiBar(data.rateLimit5h)} {percentLabel(data.rateLimit5h)}</Text>
-        {separator('s-7d')}
-        <Text>🌙 Weekly </Text>
-        <Text color={c.bar}>{emojiBar(data.rateLimit7d)} {percentLabel(data.rateLimit7d)}</Text>
-      </Box>
+      {line('l-session', [
+        show('show_model') ? <Box key="model"><Text bold color={c.model}>🤖 {data.model}</Text></Box> : null,
+        show('show_effort') && data.effort ? <Box key="effort"><Text bold color={c.label}>Effort {data.effort}</Text></Box> : null,
+        show('show_folder') ? <Box key="folder"><Text bold color={c.folder}>📂 {data.folder}</Text></Box> : null,
+        show('show_git') && data.gitBranch ? (
+          <Box key="git">
+            <Text italic color={c.branch}>🌳 {data.gitBranch} </Text>
+            <Text color={data.isGitDirty ? c.dirty : c.clean}>{data.isGitDirty ? '●' : '✓'}</Text>
+          </Box>
+        ) : null,
+        show('show_elapsed') ? <Box key="elapsed"><Text color={c.elapsed}>⌛ {formatElapsed(now - data.startedAt)}</Text></Box> : null,
+        cache ? <Box key="cache"><Text color={cache.startsWith('🧊') ? c.cacheWarm : c.cacheCold}>{cache}</Text></Box> : null,
+      ])}
+      {line('l-usage', [
+        show('show_context') ? (
+          <Box key="context">
+            <Text bold color={c.label}>🚀 Context </Text>
+            <Text bold color={c.context}>
+              {data.contextTokens ? `${data.contextTokens.replace(/ /g, '')} ` : ''}{percentLabel(data.contextPercent)}
+            </Text>
+          </Box>
+        ) : null,
+        show('show_rate_limit_5h') ? (
+          <Box key="5h">
+            <Text color={c.session}>🔥 Session 5h </Text>
+            <Text color={c.bar}>{emojiBar(data.rateLimit5h)} {percentLabel(data.rateLimit5h)}</Text>
+          </Box>
+        ) : null,
+        show('show_rate_limit_7d') ? (
+          <Box key="7d">
+            <Text>🌙 Weekly </Text>
+            <Text color={c.bar}>{emojiBar(data.rateLimit7d)} {percentLabel(data.rateLimit7d)}</Text>
+          </Box>
+        ) : null,
+      ])}
     </Box>
   )
 }
@@ -280,12 +331,12 @@ function renderModern(table: ElementTable<'desktop' | 'vscode' | 'mobile'>, data
   )
 }
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     const result = await next(e)
     const usage = await $.session.usage()
     await refresh($, usage.context, usage.rateLimits)
-    // Só o terminal mostra o cronômetro; redesenhar no desktop seria trabalho à toa
+    // Só o terminal mostra cronômetro e cache; redesenhar no desktop seria trabalho à toa
     $.clock.every(ELAPSED_TICK_MS, async () => {
       if ((await $.session.surfaces()).includes('terminal')) $.ui.invalidate('ui.render')
     })
@@ -295,17 +346,20 @@ export const register: Register = on => {
   // Disparado ao fim de cada turno e quando um limite muda: cobre modelo, git e consumo sem polling
   on('session.measure', async ($, e, next) => {
     await refresh($, e.context, e.rateLimits)
-    alertContext($, e.context)
-    await alertRateLimit($, e.rateLimits)
+    if (isEnabled(options, 'alert_context')) alertContext($, e.context)
+    if (isEnabled(options, 'alert_rate_limit')) await alertRateLimit($, e.rateLimits)
     return next(e)
   })
 
-  // O effort só chega por requisição ao modelo; guarda o último visto
+  // Effort e cache só chegam por requisição ao modelo; subagentes têm cache e effort próprios
   on('turn.step', async function* ($, e, next) {
+    if (e.agentId !== undefined) return yield* next(e)
     const effort = e.effort === undefined ? null : String(e.effort)
     const current = await read($, statusData)
     if (current && current.effort !== effort) await update($, statusData, () => ({ ...current, effort }))
-    return yield* next(e)
+    const result = yield* next(e)
+    if (result.usage) await recordCacheUse($, result.usage)
+    return result
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
@@ -315,9 +369,8 @@ export const register: Register = on => {
     // Compõe com a cadeia para não esconder outros mods do AbovePrompt (ex.: image-view)
     const below = await next(e)
     if (e.surface === 'terminal') {
-      const elapsed = formatElapsed((await $.clock.now()) - data.startedAt)
       const table = $.ui.resolve(e)
-      return <table.Box flexDirection="column">{renderTerminal(table, data, elapsed)}{below}</table.Box>
+      return <table.Box flexDirection="column">{renderTerminal(table, data, options, await $.clock.now())}{below}</table.Box>
     }
     const table = $.ui.resolve(e)
     return <table.Box flexDirection="column">{renderModern(table, data)}{below}</table.Box>
